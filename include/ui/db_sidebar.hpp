@@ -43,6 +43,7 @@ private:
     void renderDatabaseNode(const std::shared_ptr<DatabaseInterface>& db);
     void handleDatabaseContextMenu(const std::shared_ptr<DatabaseInterface>& db);
     void syncHierarchyCache(const std::vector<std::shared_ptr<DatabaseInterface>>& databases);
+    void applyEnvTag(int connectionId, const std::string& tag);
 
     // sidebar group open/closed state, read from AppState once per group
     std::unordered_map<std::string, bool> groupOpenCache_;
