@@ -22,8 +22,20 @@ POSTGRES_IMAGE="postgres:15-alpine"
 MYSQL_IMAGE="mysql:8.0"
 REDIS_IMAGE="redis:7-alpine"
 MONGODB_IMAGE="mongo:7.0"
-MSSQL_IMAGE="mcr.microsoft.com/mssql/server:2022-latest"
-ORACLE_IMAGE="gvenzl/oracle-xe:21-slim-faststart"
+if [[ "$(uname -sm)" == "Darwin arm64" ]]; then
+    # MSSQL Server has no arm64 image; use Azure SQL Edge locally.
+    MSSQL_IMAGE="${MSSQL_IMAGE:-mcr.microsoft.com/azure-sql-edge:latest}"
+    MSSQL_TOOLS_PATH="${MSSQL_TOOLS_PATH:-/opt/mssql-tools/bin/sqlcmd}"
+    # Oracle XE 21 is amd64-only and too slow under emulation; Oracle Free 23
+    # has native arm64. Different default PDB (FREEPDB1 vs XEPDB1).
+    ORACLE_IMAGE="${ORACLE_IMAGE:-gvenzl/oracle-free:23-slim-faststart}"
+    ORACLE_TEST_PDB="FREEPDB1"
+else
+    MSSQL_IMAGE="${MSSQL_IMAGE:-mcr.microsoft.com/mssql/server:2022-latest}"
+    MSSQL_TOOLS_PATH="${MSSQL_TOOLS_PATH:-/opt/mssql-tools18/bin/sqlcmd}"
+    ORACLE_IMAGE="${ORACLE_IMAGE:-gvenzl/oracle-xe:21-slim-faststart}"
+    ORACLE_TEST_PDB="XEPDB1"
+fi
 REDSHIFT_IMAGE="postgres:15-alpine"
 CASSANDRA_IMAGE="cassandra:5"
 SSH_IMAGE="dearsql-ssh-test-img"
@@ -81,7 +93,7 @@ export DEARSQL_TEST_MSSQL_NAME="MSSQLDocker"
 
 export DEARSQL_TEST_ORACLE_HOST="127.0.0.1"
 export DEARSQL_TEST_ORACLE_PORT="$ORACLE_PORT"
-export DEARSQL_TEST_ORACLE_DB="XEPDB1"
+export DEARSQL_TEST_ORACLE_DB="$ORACLE_TEST_PDB"
 export DEARSQL_TEST_ORACLE_USER="system"
 export DEARSQL_TEST_ORACLE_PASSWORD="DearSQL_Test1"
 export DEARSQL_TEST_ORACLE_NAME="OracleDocker"
@@ -110,11 +122,16 @@ export DEARSQL_SSH_KNOWN_HOSTS_FILE="/dev/null"
 
 # ── Docker helpers ──────────────────────────────────────────────────
 
-DOCKER=(docker)
-if ! docker info >/dev/null 2>&1; then
-    if command -v sudo >/dev/null 2>&1; then
-        DOCKER=(sudo docker)
-    fi
+if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+    DOCKER=(docker)
+elif command -v podman >/dev/null 2>&1 && podman info >/dev/null 2>&1; then
+    DOCKER=(podman)
+elif command -v docker >/dev/null 2>&1 && command -v sudo >/dev/null 2>&1 && \
+     sudo -n docker info >/dev/null 2>&1; then
+    DOCKER=(sudo docker)
+else
+    echo "Error: neither docker nor podman is reachable" >&2
+    exit 1
 fi
 
 docker_cmd() {
@@ -122,7 +139,7 @@ docker_cmd() {
 }
 
 container_exists() {
-    docker_cmd ps -a --format '{{.Names}}' | grep -Fxq "$1"
+    docker_cmd container inspect "$1" >/dev/null 2>&1
 }
 
 container_image() {
@@ -194,11 +211,10 @@ wait_for_command() {
 start_or_create() {
     local name="$1"
     shift
-    if docker_cmd ps --format '{{.Names}}' | grep -Fxq "$name"; then
-        return
-    fi
-    if docker_cmd ps -a --format '{{.Names}}' | grep -Fxq "$name"; then
-        docker_cmd start "$name" >/dev/null
+    # container inspect covers every state (running, exited, or podman's
+    # name-reserved-but-not-listed state); ps -a can miss the latter.
+    if docker_cmd container inspect "$name" >/dev/null 2>&1; then
+        docker_cmd start "$name" >/dev/null 2>&1 || true
         return
     fi
     docker_cmd run -d --name "$name" "$@" >/dev/null
@@ -417,14 +433,23 @@ setup_containers() {
         -p "127.0.0.1:${MSSQL_PORT}:1433" \
         "$MSSQL_IMAGE"
     wait_for_port 127.0.0.1 "$MSSQL_PORT" "MSSQL"
-    wait_for_command "MSSQL" 90 docker_cmd exec "$MSSQL_CONTAINER" \
-        /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa \
-        -P "$DEARSQL_TEST_MSSQL_PASSWORD" -C -Q "SELECT 1"
+
+    # Azure SQL Edge (used on arm64) ships without sqlcmd; talk to the mapped
+    # port from the host in that case.
+    mssql_query() {
+        if [[ "$MSSQL_IMAGE" == *"azure-sql-edge"* ]]; then
+            sqlcmd -S "127.0.0.1,${MSSQL_PORT}" -U sa \
+                -P "$DEARSQL_TEST_MSSQL_PASSWORD" -C "$@"
+        else
+            docker_cmd exec "$MSSQL_CONTAINER" "$MSSQL_TOOLS_PATH" \
+                -S localhost -U sa \
+                -P "$DEARSQL_TEST_MSSQL_PASSWORD" -C "$@"
+        fi
+    }
+    wait_for_command "MSSQL" 300 mssql_query -Q "SELECT 1"
 
     # create MSSQL test database if it doesn't exist
-    docker_cmd exec "$MSSQL_CONTAINER" \
-        /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa \
-        -P "$DEARSQL_TEST_MSSQL_PASSWORD" -C \
+    mssql_query \
         -Q "IF NOT EXISTS (SELECT name FROM sys.databases WHERE name = '$DEARSQL_TEST_MSSQL_DB') CREATE DATABASE [$DEARSQL_TEST_MSSQL_DB]" \
         >/dev/null 2>&1 || true
 
@@ -434,7 +459,7 @@ setup_containers() {
         -p "127.0.0.1:${ORACLE_PORT}:1521" \
         "$ORACLE_IMAGE"
     wait_for_port 127.0.0.1 "$ORACLE_PORT" "Oracle"
-    wait_for_command "Oracle" 120 docker_cmd exec "$ORACLE_CONTAINER" \
+    wait_for_command "Oracle" 600 docker_cmd exec "$ORACLE_CONTAINER" \
         healthcheck.sh
 
     # ── Redshift (PostgreSQL-compatible) ──
@@ -461,9 +486,10 @@ setup_containers() {
         -e HEAP_NEWSIZE=200M \
         -p "127.0.0.1:${CASSANDRA_PORT}:9042" \
         "$CASSANDRA_IMAGE"
+    # Cassandra 5 dropped the "Starting listening for CQL clients" log line the
+    # 4.x wait used, so probe via cqlsh instead — accurate across versions.
     wait_for_command "Cassandra" 600 docker_cmd exec "$CASSANDRA_CONTAINER" \
-        sh -c "grep -q 'Starting listening for CQL clients' /var/log/cassandra/system.log 2>/dev/null \
-            || grep -q 'Starting listening for CQL clients' /opt/cassandra/logs/system.log 2>/dev/null"
+        cqlsh -e "SELECT release_version FROM system.local"
 
     # ── SSH server (for tunnel tests, same network as PostgreSQL) ──
     if $has_certs; then
