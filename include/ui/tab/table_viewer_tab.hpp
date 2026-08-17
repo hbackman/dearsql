@@ -30,9 +30,6 @@ public:
         return node_;
     }
 
-    [[nodiscard]] IDatabaseNode* connectionNode() const override {
-        return node_;
-    }
     void loadDataAsync();
     void checkAsyncLoadStatus();
     void nextPage();

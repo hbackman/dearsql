@@ -433,13 +433,7 @@ void ConnectionDialog::connectSQLite() {
         return;
     }
 
-    DatabaseConnectionInfo info;
-    info.type = DatabaseType::SQLITE;
-    info.name = nameBuf_;
-    info.path = sqlitePathBuf_;
-    info.color = colorIdx_ >= 0 ? Theme::ConnectionPalette::ENTRIES[colorIdx_].key : "";
-    info.envTag = envTagBuf_;
-
+    const DatabaseConnectionInfo info = snapshotForm();
     auto db = std::make_shared<SQLiteDatabase>(info);
     auto [success, error] = db->connect();
     if (success) {
