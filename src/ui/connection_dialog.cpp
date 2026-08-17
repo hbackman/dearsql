@@ -13,6 +13,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <format>
+#include <iterator>
 
 namespace {
     constexpr const char* kPopupId = "###connection_dialog";
@@ -45,6 +46,17 @@ namespace {
         ImGui::AlignTextToFramePadding();
         ImGui::TextColored(colors.subtext0, "%s", text);
         ImGui::SameLine(kLabelColumnW);
+    }
+
+    // ring around the swatch just submitted, so the current choice is visible
+    // without moving the swatches around
+    void drawSwatchSelection(bool selected) {
+        if (!selected)
+            return;
+        const auto& colors = Application::getInstance().getCurrentColors();
+        ImGui::GetWindowDrawList()->AddRect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax(),
+                                            ImGui::GetColorU32(colors.text),
+                                            ImGui::GetStyle().FrameRounding, 0, 2.0f);
     }
 
     bool shouldShowCACertField(DatabaseType type, SslMode mode) {
@@ -109,6 +121,8 @@ void ConnectionDialog::resetForm() {
     typeIdx_ = 0;
     connectByIdx_ = 0;
     copyToBuf(nameBuf_, sizeof(nameBuf_), "Untitled connection");
+    colorIdx_ = -1;
+    envTagBuf_[0] = '\0';
     urlBuf_[0] = '\0';
     urlError_.clear();
     sqlitePathBuf_[0] = '\0';
@@ -181,6 +195,15 @@ void ConnectionDialog::populateForm(const DatabaseConnectionInfo& info) {
     typeIdx_ = static_cast<int>(info.type);
     copyToBuf(nameBuf_, sizeof(nameBuf_), info.name);
 
+    colorIdx_ = -1;
+    for (int i = 0; i < static_cast<int>(std::size(Theme::ConnectionPalette::ENTRIES)); ++i) {
+        if (info.color == Theme::ConnectionPalette::ENTRIES[i].key) {
+            colorIdx_ = i;
+            break;
+        }
+    }
+    copyToBuf(envTagBuf_, sizeof(envTagBuf_), info.envTag);
+
     if (info.type == DatabaseType::SQLITE) {
         copyToBuf(sqlitePathBuf_, sizeof(sqlitePathBuf_), info.path);
         return;
@@ -227,6 +250,8 @@ DatabaseConnectionInfo ConnectionDialog::snapshotForm() const {
     DatabaseConnectionInfo info;
     info.type = selectedType();
     info.name = nameBuf_;
+    info.color = colorIdx_ >= 0 ? Theme::ConnectionPalette::ENTRIES[colorIdx_].key : "";
+    info.envTag = envTagBuf_;
     if (info.type == DatabaseType::SQLITE) {
         info.path = sqlitePathBuf_;
         return info;
@@ -379,6 +404,8 @@ void ConnectionDialog::connectSQLite() {
     info.type = DatabaseType::SQLITE;
     info.name = nameBuf_;
     info.path = sqlitePathBuf_;
+    info.color = colorIdx_ >= 0 ? Theme::ConnectionPalette::ENTRIES[colorIdx_].key : "";
+    info.envTag = envTagBuf_;
 
     auto db = std::make_shared<SQLiteDatabase>(info);
     auto [success, error] = db->connect();
@@ -574,6 +601,8 @@ void ConnectionDialog::render() {
     ImGui::SetNextItemWidth(-FLT_MIN);
     ImGui::InputTextWithHint("##conn_name", "Connection name", nameBuf_, sizeof(nameBuf_));
 
+    renderAppearanceRow();
+
     renderTypeRow();
 
     if (selectedType() != DatabaseType::SQLITE) {
@@ -612,6 +641,49 @@ void ConnectionDialog::render() {
     ImGui::EndPopup();
     ImGui::PopStyleColor();
     ImGui::PopStyleVar();
+}
+
+void ConnectionDialog::renderAppearanceRow() {
+    const auto& colors = Application::getInstance().getCurrentColors();
+
+    fieldLabel("Status color");
+
+    constexpr float kSwatch = 22.0f;
+    const ImGuiStyle& style = ImGui::GetStyle();
+
+    // "none" first, then the palette, so clearing is as easy as choosing
+    ImGui::PushStyleColor(ImGuiCol_Button, colors.surface1);
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, colors.surface2);
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, colors.surface2);
+    if (ImGui::Button("##conn_color_none", ImVec2(kSwatch, kSwatch))) {
+        colorIdx_ = -1;
+    }
+    ImGui::PopStyleColor(3);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("No colour");
+    drawSwatchSelection(colorIdx_ == -1);
+
+    for (int i = 0; i < static_cast<int>(std::size(Theme::ConnectionPalette::ENTRIES)); ++i) {
+        const auto& entry = Theme::ConnectionPalette::ENTRIES[i];
+        const ImVec4 swatchColor = colors.*entry.member;
+
+        ImGui::SameLine(0.0f, style.ItemSpacing.x * 0.5f);
+        ImGui::PushID(i);
+        ImGui::PushStyleColor(ImGuiCol_Button, swatchColor);
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, swatchColor);
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, swatchColor);
+        if (ImGui::Button("##conn_color", ImVec2(kSwatch, kSwatch))) {
+            colorIdx_ = i;
+        }
+        ImGui::PopStyleColor(3);
+        ImGui::PopID();
+        drawSwatchSelection(colorIdx_ == i);
+    }
+
+    fieldLabel("Tag");
+    ImGui::SetNextItemWidth(180.0f);
+    ImGui::InputTextWithHint("##conn_env_tag", "production, staging, …", envTagBuf_,
+                             sizeof(envTagBuf_));
 }
 
 void ConnectionDialog::renderTypeRow() {
