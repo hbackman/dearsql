@@ -167,6 +167,12 @@ namespace {
         std::string sslCACertPath = columnText(stmt, 21);
         conn.connectionInfo.sslCACertPath = (sslCACertPath == "NULL") ? "" : sslCACertPath;
 
+        std::string colorStr = columnText(stmt, 22);
+        conn.connectionInfo.color = (colorStr == "NULL") ? "" : colorStr;
+
+        std::string envTagStr = columnText(stmt, 23);
+        conn.connectionInfo.envTag = (envTagStr == "NULL") ? "" : envTagStr;
+
         // Decrypt SSH credentials reusing the same per-row key
         if (!saltStr.empty() && !encryptionKey.empty()) {
             if (!encryptedSshUsername.empty()) {
@@ -344,6 +350,11 @@ bool AppState::createTables() {
     ensureColumnExists("ssl_ca_cert_path",
                        "ALTER TABLE saved_connections ADD COLUMN ssl_ca_cert_path TEXT;");
 
+    // Presentation
+    ensureColumnExists("color", "ALTER TABLE saved_connections ADD COLUMN color TEXT DEFAULT '';");
+    ensureColumnExists("env_tag",
+                       "ALTER TABLE saved_connections ADD COLUMN env_tag TEXT DEFAULT '';");
+
     // Ensure default workspace exists
     if (success) {
         ensureDefaultWorkspace();
@@ -369,8 +380,8 @@ int AppState::saveConnection(const SavedConnection& connection) const {
         (name, type, host, port, database_name, username, password, path, salt, last_used, workspace_id,
          show_all_databases, sslmode,
          ssh_enabled, ssh_host, ssh_port, ssh_username, ssh_auth_method, ssh_private_key_path, ssh_password,
-         ssl_ca_cert_path)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+         ssl_ca_cert_path, color, env_tag)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
     )";
 
     // Encrypt sensitive data
@@ -469,6 +480,10 @@ int AppState::saveConnection(const SavedConnection& connection) const {
     sqlite3_bind_text(stmt.get(), 19, encryptedSshPassword.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt.get(), 20, connection.connectionInfo.sslCACertPath.c_str(), -1,
                       SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt.get(), 21, connection.connectionInfo.color.c_str(), -1,
+                      SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt.get(), 22, connection.connectionInfo.envTag.c_str(), -1,
+                      SQLITE_TRANSIENT);
 
     rc = sqlite3_step(stmt.get());
     if (rc != SQLITE_DONE) {
@@ -487,7 +502,7 @@ bool AppState::updateConnection(const SavedConnection& connection) const {
             workspace_id = ?, show_all_databases = ?, sslmode = ?,
             ssh_enabled = ?, ssh_host = ?, ssh_port = ?, ssh_username = ?,
             ssh_auth_method = ?, ssh_private_key_path = ?, ssh_password = ?,
-            ssl_ca_cert_path = ?
+            ssl_ca_cert_path = ?, color = ?, env_tag = ?
         WHERE id = ?;
     )";
 
@@ -587,7 +602,11 @@ bool AppState::updateConnection(const SavedConnection& connection) const {
     sqlite3_bind_text(stmt.get(), 19, encryptedSshPassword.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt.get(), 20, connection.connectionInfo.sslCACertPath.c_str(), -1,
                       SQLITE_TRANSIENT);
-    sqlite3_bind_int(stmt.get(), 21, connection.id);
+    sqlite3_bind_text(stmt.get(), 21, connection.connectionInfo.color.c_str(), -1,
+                      SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt.get(), 22, connection.connectionInfo.envTag.c_str(), -1,
+                      SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt.get(), 23, connection.id);
 
     rc = sqlite3_step(stmt.get());
     if (rc != SQLITE_DONE) {
@@ -610,7 +629,9 @@ std::vector<SavedConnection> AppState::getSavedConnections() const {
                ssh_host, COALESCE(ssh_port, 22) as ssh_port,
                ssh_username, COALESCE(ssh_auth_method, 'password') as ssh_auth_method,
                ssh_private_key_path, ssh_password,
-               COALESCE(ssl_ca_cert_path, '') as ssl_ca_cert_path
+               COALESCE(ssl_ca_cert_path, '') as ssl_ca_cert_path,
+               COALESCE(color, '') as color,
+               COALESCE(env_tag, '') as env_tag
         FROM saved_connections
         ORDER BY last_used DESC;
     )";
@@ -895,7 +916,9 @@ std::vector<SavedConnection> AppState::getConnectionsForWorkspace(const int work
                ssh_host, COALESCE(ssh_port, 22) as ssh_port,
                ssh_username, COALESCE(ssh_auth_method, 'password') as ssh_auth_method,
                ssh_private_key_path, ssh_password,
-               COALESCE(ssl_ca_cert_path, '') as ssl_ca_cert_path
+               COALESCE(ssl_ca_cert_path, '') as ssl_ca_cert_path,
+               COALESCE(color, '') as color,
+               COALESCE(env_tag, '') as env_tag
         FROM saved_connections
         WHERE workspace_id = ?
         ORDER BY last_used DESC;
